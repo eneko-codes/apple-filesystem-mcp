@@ -1,0 +1,118 @@
+{
+  "manifest_version": "0.3",
+  "name": "apple-filesystem-mcp",
+  "display_name": "Files",
+  "version": "1.0.0",
+  "description": "Read, write and organise files, with separate read and write scopes",
+  "long_description": "A local MCP server written in Swift for the filesystem: directory listing, text reading, writing and editing, moving, copying, and Finder tags.\n\nRead and write scopes are configured separately and on purpose. Give Claude a broad read scope and a narrow write scope, and it can find anything you allow while being able to change almost nothing. Every path is resolved through symlinks and “..” before it is checked, so a scope cannot be walked out of.\n\nThe two folder lists below are the ONE deliberate exception to \"nothing to configure\" in this family of extensions: they are the security boundary itself, not a preference, so there is no sensible default to hardcode in their place. Leaving read scope blank would mean reading nothing; guessing one would mean guessing what may be exposed.\n\nNothing here deletes. filesystem_trash moves an item to the Trash, where you can put it back.\n\nSearching by content, PDF text extraction and OCR moved out to their own extensions — apple-spotlight-mcp, apple-pdf-mcp and apple-vision-mcp — each with its own read-only folder scope. This one is FileManager only.\n\nNot affiliated with or endorsed by Apple Inc.",
+  "author": {
+    "name": "eneko-codes",
+    "url": "https://github.com/eneko-codes"
+  },
+  "homepage": "https://github.com/eneko-codes/apple-filesystem-mcp",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/eneko-codes/apple-filesystem-mcp"
+  },
+  "license": "MIT",
+  "icon": "icon.png",
+  "keywords": [
+    "files",
+    "filesystem",
+    "macos"
+  ],
+  "server": {
+    "type": "binary",
+    "entry_point": "server/apple-filesystem-mcp",
+    "mcp_config": {
+      "command": "${__dirname}/server/apple-filesystem-mcp",
+      "args": [
+        "--write-roots",
+        "${user_config.write_roots}",
+        "--read-roots",
+        "${user_config.read_roots}"
+      ],
+      "env": {}
+    }
+  },
+  "tools": [
+    {
+      "name": "filesystem_status",
+      "description": "Reports which folders this server may read, which it may change, and whether macOS is actually letting it reach them. Reads no file contents."
+    },
+    {
+      "name": "filesystem_list",
+      "description": "One row per item directly inside a folder: kind, name, size, modification date and a content hash. Does not recurse — use filesystem_tree for that."
+    },
+    {
+      "name": "filesystem_stat",
+      "description": "Full metadata for a single file or folder: kind, UTI, Finder's type description, size in bytes, content hash, created and modified dates, owner, POSIX mode, symlink destination, Finder tags, and…"
+    },
+    {
+      "name": "filesystem_tree",
+      "description": "Walks a folder to a bounded depth and returns an indented tree of what is in it. Sizes only; no hashes — filesystem_list is where a row carries everything."
+    },
+    {
+      "name": "filesystem_read_text",
+      "description": "Returns a text file's contents, with the encoding guessed rather than assumed: UTF-8, then UTF-16 by its byte-order mark, then ISO Latin 1, then Mac OS Roman. The answer says which one decoded it."
+    },
+    {
+      "name": "filesystem_grep",
+      "description": "Walks a folder and returns every line matching a regular expression, with its path and line number. The tool for a pattern rather than a word, and the fallback for what Spotlight has not indexed."
+    },
+    {
+      "name": "filesystem_tags_get",
+      "description": "Lists the Finder tags on one file or folder. Tags are an ordinary extended attribute, so they are readable without opening the file, and they are how many people actually organise a folder that…"
+    },
+    {
+      "name": "filesystem_write",
+      "description": "Creates a text file, or replaces one, or appends to one. UTF-8 only. The destination must be inside a configured WRITABLE folder, which is a narrower list than the readable one."
+    },
+    {
+      "name": "filesystem_edit",
+      "description": "Replaces an exact string in a text file with another. The match is literal — whitespace, indentation and line endings included — and no regular expression is involved."
+    },
+    {
+      "name": "filesystem_mkdir",
+      "description": "Creates a folder inside a configured writable folder. Creating the intermediate folders along the way is the default; turn it off to be told when the parent is missing rather than having it invented."
+    },
+    {
+      "name": "filesystem_move",
+      "description": "Moves a file or folder to a new path, which is also how it is renamed. BOTH ends must be inside a configured writable folder — moving something out of the writable scope would be a way around the…"
+    },
+    {
+      "name": "filesystem_copy",
+      "description": "Copies a file or folder. The SOURCE need only be readable; the DESTINATION must be inside a configured writable folder. That asymmetry is deliberate: copying a document out of a read-only folder…"
+    },
+    {
+      "name": "filesystem_tags_set",
+      "description": "Replaces ALL Finder tags on a file or folder with the list given. [] removes every tag. This is a replace, not an add: read the current tags with filesystem_tags_get first and send them back…"
+    },
+    {
+      "name": "filesystem_trash",
+      "description": "Moves a file or folder to the Trash and reports where it landed. Requires confirm=true."
+    }
+  ],
+  "user_config": {
+    "read_roots": {
+      "type": "directory",
+      "title": "Folders Claude may read",
+      "multiple": true,
+      "required": true,
+      "description": "Claude can list and read anything inside these. Nothing outside them is reachable."
+    },
+    "write_roots": {
+      "type": "directory",
+      "title": "Folders Claude may write to",
+      "multiple": true,
+      "required": false,
+      "description": "Keep this much narrower than the read list, and inside it. Leave empty for a read-only server."
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": [
+      "darwin"
+    ]
+  }
+}
