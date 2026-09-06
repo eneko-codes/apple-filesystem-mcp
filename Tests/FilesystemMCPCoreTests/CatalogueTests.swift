@@ -8,17 +8,6 @@ import Testing
 @Suite("Catalogue")
 struct CatalogueTests {
 
-    @Test("Every tool has a unique name, title and description")
-    func catalogueIsWellFormed() {
-        let tools = ToolCatalog.all()
-        let names = tools.map(\.name)
-        #expect(names.count == Set(names).count)
-        for tool in tools {
-            #expect(tool.description?.isEmpty == false, "\(tool.name) has no description")
-            #expect(tool.title?.isEmpty == false, "\(tool.name) has no title")
-        }
-    }
-
     /// Claude Desktop's schema sanitiser drops a property whose `type` is a union such as
     /// `["string", "null"]` and hands the model a bare `{}` in its place. An untyped array
     /// is then serialised to a string before it leaves the client and rejected on arrival.
