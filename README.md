@@ -239,7 +239,7 @@ that accidentally reached the real disk fails loudly rather than quietly passing
 agent working in this repository may touch a file outside it.
 
 Manual verification against real folders is the owner's job, by hand, with MCP
-Inspector; `verification.md` is the script for it.
+Inspector.
 
 ## Licence
 
