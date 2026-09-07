@@ -12,14 +12,6 @@ two separate allow-lists chosen when the extension is installed: a broad list of
 Claude may **read**, and a narrower list of folders it may **write to**. Nothing outside
 either list is reachable, by any tool.
 
-This server is one of a 4-way split of what used to be a combined FileManager +
-Spotlight + PDFKit + Vision surface. Its siblings are
-[apple-spotlight-mcp](https://github.com/eneko-codes/apple-spotlight-mcp) (search),
-[apple-pdf-mcp](https://github.com/eneko-codes/apple-pdf-mcp) (PDF text/outline/metadata)
-and [apple-vision-mcp](https://github.com/eneko-codes/apple-vision-mcp) (OCR). If you're
-looking for `fs_search`, `fs_read_pdf` or `fs_ocr`, they now live in those three repos as
-`spotlight_search`, `pdf_read` and `vision_ocr`.
-
 Not affiliated with or endorsed by Apple Inc.
 
 ## Requirements
@@ -38,7 +30,7 @@ Not affiliated with or endorsed by Apple Inc.
 | `filesystem_list` | read | One row per item directly inside a folder: kind, name, size, modification date and a content hash. Does not recurse. |
 | `filesystem_stat` | read | Full metadata for one file or folder, including whether this process can actually read and write it — a different question from whether the scope allows it. |
 | `filesystem_tree` | read | A depth-limited, indented tree of a folder's contents. Sizes only, no hashes. |
-| `filesystem_read_text` | read | A text file's contents, with the encoding guessed (UTF-8, UTF-16, ISO Latin 1, Mac OS Roman) and the answer saying which one decoded it. |
+| `filesystem_read_text` | read | A text file's contents, with the encoding guessed (UTF-8, UTF-16, ISO Latin 1, Mac OS Roman, else whatever Foundation infers) and the answer saying which one decoded it. |
 | `filesystem_grep` | read | Walks a folder and returns every line matching a regular expression, with path and line number. The fallback for what Spotlight has not indexed. |
 | `filesystem_tags_get` | read | Lists the Finder tags on one file or folder. |
 | `filesystem_write` | **destructive** | Creates, replaces or appends to a text file. Replacing requires `overwrite=true`. |
@@ -48,6 +40,20 @@ Not affiliated with or endorsed by Apple Inc.
 | `filesystem_copy` | write | Copies a file or folder. The source need only be readable; only the destination must be writable. Requires `overwrite=true` to replace an existing destination. |
 | `filesystem_tags_set` | write | Replaces **all** Finder tags on a file or folder with the list given. `[]` removes every tag. |
 | `filesystem_trash` | **destructive** | Moves a file or folder to the Trash. Requires `confirm=true`. |
+
+## Frameworks and APIs
+
+| Used | For | Reference |
+|---|---|---|
+| Foundation `FileManager` — `contentsOfDirectory`, `attributesOfItem`, `enumerator`, `createDirectory`, `moveItem`, `copyItem`, `trashItem` | Every listing, walk and write | [FileManager](https://developer.apple.com/documentation/foundation/filemanager) |
+| `URLResourceValues` — `.contentTypeKey`, `.tagNamesKey`, `.creationDateKey`, `.fileSizeKey`, `.isSymbolicLinkKey` | Type, tags, dates, size, symlink detection | [URLResourceValues](https://developer.apple.com/documentation/foundation/urlresourcevalues) |
+| UniformTypeIdentifiers — `UTType`, reached through `contentType` | Naming a file's type | [Uniform Type Identifiers](https://developer.apple.com/documentation/uniformtypeidentifiers) |
+| CryptoKit — `SHA256` | The short content hash on listings | [CryptoKit](https://developer.apple.com/documentation/cryptokit) |
+| `NSRegularExpression` | `filesystem_grep` | [NSRegularExpression](https://developer.apple.com/documentation/foundation/nsregularexpression) |
+
+`FileManager.removeItem` is deliberately never called: `trashItem` is the only removal route,
+which is what makes Finder's Put Back work. No Spotlight query API, no PDFKit, no Vision, and
+no Apple events — this server drives no app.
 
 ## The rules worth knowing before you use it
 
@@ -79,13 +85,10 @@ no `filesystem_disk_usage`, no `filesystem_recent` — no computed tool of any k
 first 16 hex characters of the file's SHA-256) so that comparing them is your job, done
 in the open, rather than a heuristic buried in this server.
 
-**Content search, PDF text and OCR moved out.** This server used to do all of that too —
-they are now [apple-spotlight-mcp](https://github.com/eneko-codes/apple-spotlight-mcp),
-[apple-pdf-mcp](https://github.com/eneko-codes/apple-pdf-mcp) and
-[apple-vision-mcp](https://github.com/eneko-codes/apple-vision-mcp), each with its own
-read-only folder scope. `filesystem_grep` is what is left here: it walks files itself
-and is far slower than a Spotlight search, so scope it to the smallest folder that could
-hold the answer.
+**This server reads files, not the meaning of their contents.** There is no content index,
+no PDF text extraction and no OCR. `filesystem_grep` walks the files itself, which is slow,
+so scope it to the smallest folder that could hold the answer — and note it stops at a cap
+on matches, files scanned and bytes per file rather than running forever.
 
 ## Install
 
@@ -112,8 +115,8 @@ already running, and the old one keeps answering.
 
 ### 3. Configure the read and write scopes
 
-This server is the one deliberate exception to "nothing to configure" in this family of
-extensions: `read_roots` and `write_roots` are not a preference with a sensible default,
+This server is the one deliberate exception to "nothing to configure": `read_roots` and
+`write_roots` are not a preference with a sensible default,
 they are the security boundary itself. In Claude Desktop → Settings → Extensions →
 Files, set:
 
@@ -177,8 +180,7 @@ MCPB_HARDENED=1 MCPB_SIGN_IDENTITY="Developer ID Application: …" ./scripts/pac
 ```
 
 That adds the hardened runtime and a secure timestamp, which notarisation requires. This
-server sends no Apple events and needs no entitlements file to go with it, unlike the
-sibling servers that automate another app.
+server sends no Apple events, so it needs no entitlements file to go with it.
 
 ## Tool switches
 
@@ -216,11 +218,10 @@ the binary in use so you can tell which one answered.
   `filesystem_stat` give you the rows; the comparison is yours.
 - **`filesystem_grep` reads every file itself**, so it is far slower than a Spotlight
   search and should be scoped to the smallest folder that could hold the answer.
-- **No content search, PDF reading or OCR here.**
-  [apple-spotlight-mcp](https://github.com/eneko-codes/apple-spotlight-mcp),
-  [apple-pdf-mcp](https://github.com/eneko-codes/apple-pdf-mcp) and
-  [apple-vision-mcp](https://github.com/eneko-codes/apple-vision-mcp) are separate
-  extensions with their own scopes.
+- **No content index, PDF text extraction or OCR here.** `filesystem_grep` is the only
+  content-matching tool, and it reads the bytes itself.
+- **`filesystem_grep` stops early by design**, at a cap on matches found, files scanned and
+  bytes read per file. A truncated search is not an empty one.
 - **Files above a configured hash ceiling are listed without a hash** in
   `filesystem_list`, to avoid reading a whole folder of large files just to produce a
   listing.
@@ -232,14 +233,14 @@ swift build
 swift test
 ```
 
-18 tests across two suites — `PathScopeTests` and `CatalogueTests` — all against a
-modelled filesystem that throws from every method except `canonicalise`, so a scope test
+17 tests across two suites — `PathScopeTests` and `CatalogueTests` — all against a
+modelled filesystem whose methods throw (bar `canonicalise` and `probe`, which return values), so a scope test
 that accidentally reached the real disk fails loudly rather than quietly passing. See
 `CLAUDE.md`, whose first section is the hard rule that makes that non-negotiable: no
 agent working in this repository may touch a file outside it.
 
 Manual verification against real folders is the owner's job, by hand, with MCP
-Inspector; `verification.md` is the script for it.
+Inspector.
 
 ## Licence
 
