@@ -18,6 +18,17 @@ A local MCP server (Swift 6, stdio transport) for the filesystem: directory list
 
 Access is bounded by `read_roots` / `write_roots`, configured per install.
 
+## Apple frameworks
+
+[FileManager](https://developer.apple.com/documentation/foundation/filemanager) for every listing, walk and write; [`URLResourceValues`](https://developer.apple.com/documentation/foundation/urlresourcevalues) for type, tags, dates, size and symlink detection; [UniformTypeIdentifiers](https://developer.apple.com/documentation/uniformtypeidentifiers) `UTType` through `contentType`; [CryptoKit](https://developer.apple.com/documentation/cryptokit) `SHA256` for the short content hash; [`NSRegularExpression`](https://developer.apple.com/documentation/foundation/nsregularexpression) for `filesystem_grep`.
+
+## Native surface not used
+
+- `FileManager.removeItem`. `trashItem` is the only removal route, which is what makes Finder's Put Back work. Do not add a hard delete.
+- Any content index, PDF text extraction or text recognition. `filesystem_grep` reads bytes itself, and stops at a cap on matches, files scanned and bytes per file.
+- Apple events entirely — this server drives no app, which is why it ships no entitlements file.
+- File-presenter and coordinated-read APIs (`NSFileCoordinator`, `NSFilePresenter`).
+
 ## Commands
 
 ```bash
