@@ -44,6 +44,10 @@ named in the question you asked, it has to have a way back, and you have to say 
 you are on and why the gentler ones cannot answer it. Whatever you created, remove in the
 same session.
 
+**What you make goes in `$TMPDIR`.** Test files and folders belong under a temporary
+directory you created yourself — never under `~`, never beside the owner's own files — and
+are deleted in the same session. That is rung 2 done properly.
+
 ## What this is
 
 A local MCP server (Swift 6, stdio transport) for the filesystem: directory listing, text reading, writing and editing, `grep`, and Finder tags, all through `FileManager`. No Finder, no Apple events, no network.
