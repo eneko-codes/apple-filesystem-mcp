@@ -233,7 +233,7 @@ swift build
 swift test
 ```
 
-17 tests across two suites — `PathScopeTests` and `CatalogueTests` — all against a
+The tests (`PathScopeTests` and `CatalogueTests`) run entirely against a
 modelled filesystem whose methods throw (bar `canonicalise` and `probe`, which return values), so a scope test
 that accidentally reached the real disk fails loudly rather than quietly passing. See
 `CLAUDE.md`, whose first section is the hard rule that makes that non-negotiable: no
