@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "apple-filesystem-mcp",
   "display_name": "Files",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Read, write and organise files, with separate read and write scopes",
   "long_description": "A local MCP server written in Swift for the filesystem: directory listing, text reading, writing and editing, moving, copying, and Finder tags.\n\nRead and write scopes are configured separately and on purpose. Give Claude a broad read scope and a narrow write scope, and it can find anything you allow while being able to change almost nothing. Every path is resolved through symlinks and “..” before it is checked, so a scope cannot be walked out of.\n\nThe two folder lists below are the ONE deliberate exception to \"nothing to configure\" in this family of extensions: they are the security boundary itself, not a preference, so there is no sensible default to hardcode in their place. Leaving read scope blank would mean reading nothing; guessing one would mean guessing what may be exposed.\n\nNothing here deletes. filesystem_trash moves an item to the Trash, where you can put it back.\n\nSearching by content, PDF text extraction and OCR moved out to their own extensions — apple-spotlight-mcp, apple-pdf-mcp and apple-vision-mcp — each with its own read-only folder scope. This one is FileManager only.\n\nNot affiliated with or endorsed by Apple Inc.",
   "author": {

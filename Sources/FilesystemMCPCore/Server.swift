@@ -1,10 +1,9 @@
 import Foundation
-import MCP
 
 public enum FilesystemMCPServer {
 
     public static let name = "apple-filesystem-mcp"
-    public static let version = "1.0.0"
+    public static let version = "1.0.1"
 
     /// Returned from `initialize`. It carries what per-tool descriptions cannot state
     /// once: the two allow-lists, which sibling server answers which kind of question,
@@ -50,23 +49,19 @@ public enum FilesystemMCPServer {
     public static func run(
         store: any FilesystemStore = SystemFilesystemStore(),
         configuration: Configuration = Configuration()
-    ) async throws {
-        let tools = FilesystemTools(store: store, configuration: configuration)
-        let server = Server(
-            name: name,
-            version: version,
-            instructions: instructions,
-            capabilities: .init(tools: .init(listChanged: false))
-        )
-
-        await server.withMethodHandler(ListTools.self) { _ in .init(tools: ToolCatalog.all(configuration)) }
-        await server.withMethodHandler(CallTool.self) { await tools.handle($0) }
-
-        // The default StdioTransport logger is a no-op handler. Leave it that way: a
-        // logger writing to stdout would interleave with the JSON-RPC stream and break
-        // every response after the first log line.
+    ) async {
         Diagnostics.started(version: version)
-        try await server.start(transport: StdioTransport())
-        await server.waitUntilCompleted()
+        await serveStandardStreams(
+            handler: handler(
+                tools: FilesystemTools(store: store, configuration: configuration),
+                configuration: configuration))
+    }
+
+    /// The configuration is passed again because the catalogue's descriptions are built
+    /// from it, not only the tools.
+    public static func handler(tools: FilesystemTools, configuration: Configuration) -> MCPHandler {
+        MCPHandler(
+            name: name, version: version, instructions: instructions,
+            catalog: ToolCatalog.all(configuration), tools: tools)
     }
 }

@@ -1,5 +1,4 @@
 import Foundation
-import MCP
 
 /// Routes a `tools/call` to the store and renders the answer.
 ///
@@ -10,7 +9,7 @@ import MCP
 /// Every path argument, without exception, is turned into a `ScopedPath` by
 /// `PathScope.resolve` before it is used. There is no other way to obtain one, so a tool
 /// added later cannot forget the check: it will not compile.
-public struct FilesystemTools: Sendable {
+public struct FilesystemTools: ToolHandler {
     private let store: any FilesystemStore
     private let scope: PathScope
     private let configuration: Configuration
@@ -34,27 +33,21 @@ public struct FilesystemTools: Sendable {
         self.scope = PathScope(configuration: configuration, store: store)
     }
 
-    public func handle(_ parameters: CallTool.Parameters) async -> CallTool.Result {
+    public func handle(_ parameters: ToolCall) async -> ToolOutput {
         let started = ContinuousClock.now
         do {
-            let text = try run(parameters)
-            return .init(content: [.text(text: text, annotations: nil, _meta: nil)], isError: false)
+            return ToolOutput(text: try run(parameters), isError: false)
         } catch let error as ToolError {
             Diagnostics.toolFailed(parameters.name, error: error, since: started)
-            return .init(
-                content: [.text(text: error.message, annotations: nil, _meta: nil)], isError: true)
+            return ToolOutput(text: error.message, isError: true)
         } catch {
             Diagnostics.toolFailed(parameters.name, error: error, since: started)
-            return .init(
-                content: [
-                    .text(
-                        text: ToolError.storeFailure(error.localizedDescription).message,
-                        annotations: nil, _meta: nil)
-                ], isError: true)
+            return ToolOutput(
+                text: ToolError.storeFailure(error.localizedDescription).message, isError: true)
         }
     }
 
-    private func run(_ parameters: CallTool.Parameters) throws -> String {
+    private func run(_ parameters: ToolCall) throws -> String {
         let arguments = Arguments(parameters.arguments)
 
         switch parameters.name {
