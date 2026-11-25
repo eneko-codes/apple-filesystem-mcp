@@ -77,31 +77,14 @@ public struct SystemFilesystemStore: FilesystemStore {
 
     // MARK: - Reads
 
-    public func list(_ path: ScopedPath, includeHidden: Bool, hashCeilingBytes: Int) throws
-        -> [FileEntry]
-    {
-        let url = URL(fileURLWithPath: path.path)
-        guard try isDirectory(url) else { throw ToolError.notADirectory(path: path.path) }
-
-        let children: [URL]
-        do {
-            children = try fileManager.contentsOfDirectory(
-                at: url, includingPropertiesForKeys: Array(Self.entryKeys),
-                options: includeHidden ? [] : [.skipsHiddenFiles])
-        } catch {
-            throw mapError(error, path: path.path)
-        }
-        return
-            children
-            .map { entry(at: $0, hashCeilingBytes: hashCeilingBytes) }
-            .sorted { lhs, rhs in
-                // Folders first, then by name: the shape of a folder is easier to read
-                // when its structure is not interleaved with its contents.
-                if (lhs.kind == .directory) != (rhs.kind == .directory) {
-                    return lhs.kind == .directory
-                }
-                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
-            }
+    public func list(
+        _ path: ScopedPath, includeHidden: Bool, hashCeilingBytes: Int, limit: Int, offset: Int,
+        expired: () -> Bool
+    ) throws -> FileListing {
+        FolderScan.listing(
+            children: try folder(path), includeHidden: includeHidden, limit: limit,
+            offset: offset, expired: expired
+        ) { hashed($0, ceilingBytes: hashCeilingBytes) }
     }
 
     public func stat(_ path: ScopedPath, hashCeilingBytes: Int) throws -> FileStat {
@@ -109,7 +92,7 @@ public struct SystemFilesystemStore: FilesystemStore {
         guard fileManager.fileExists(atPath: path.path) || isSymbolicLink(url) else {
             throw ToolError.notFound(path: path.path)
         }
-        let entry = entry(at: url, hashCeilingBytes: hashCeilingBytes)
+        let entry = hashed(entry(at: url), ceilingBytes: hashCeilingBytes)
 
         let values = try? url.resourceValues(forKeys: [
             .creationDateKey, .contentTypeKey, .localizedTypeDescriptionKey, .tagNamesKey,
@@ -136,50 +119,25 @@ public struct SystemFilesystemStore: FilesystemStore {
     }
 
     public func tree(
-        _ path: ScopedPath, maximumDepth: Int, includeHidden: Bool, entryLimit: Int
+        _ path: ScopedPath, maximumDepth: Int, includeHidden: Bool, limit: Int, offset: Int,
+        countCeiling: Int, expired: () -> Bool
     ) throws -> FileTree {
-        let root = URL(fileURLWithPath: path.path)
-        guard try isDirectory(root) else { throw ToolError.notADirectory(path: path.path) }
-
-        var nodes: [FileTree.Node] = []
-        var truncated = false
-
-        func walk(_ directory: URL, depth: Int) {
-            guard depth <= maximumDepth, !truncated else { return }
-            let children =
-                (try? fileManager.contentsOfDirectory(
-                    at: directory, includingPropertiesForKeys: Array(Self.entryKeys),
-                    options: includeHidden ? [] : [.skipsHiddenFiles])) ?? []
-            for child in children.sorted(by: {
-                $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent)
-                    == .orderedAscending
-            }) {
-                guard nodes.count < entryLimit else {
-                    truncated = true
-                    return
-                }
-                // No hashing in a tree: it would mean reading every byte under the root,
-                // which is a different order of cost from listing names. filesystem_list
-                // is where a row carries a hash.
-                let child = entry(at: child, hashCeilingBytes: 0)
-                nodes.append(FileTree.Node(entry: child, depth: depth - 1))
-                if child.kind == .directory {
-                    walk(URL(fileURLWithPath: child.path), depth: depth + 1)
-                }
-            }
-        }
-        walk(root, depth: 1)
-        return FileTree(root: path.path, nodes: nodes, truncated: truncated)
+        // No hashing in a tree: it would mean reading every byte under the root, which is
+        // a different order of cost from listing names. filesystem_list is where a row
+        // carries a hash.
+        FolderScan.tree(
+            root: path.path, rootChildren: try folder(path), maximumDepth: maximumDepth,
+            includeHidden: includeHidden, limit: limit, offset: offset,
+            countCeiling: countCeiling, expired: expired, children: children(of:))
     }
 
-    public func readText(_ path: ScopedPath, maximumBytes: Int) throws -> TextContent {
+    public func read(_ path: ScopedPath, chunkBytes: Int, _ body: (Data) throws -> Bool) throws {
         let url = URL(fileURLWithPath: path.path)
         guard fileManager.fileExists(atPath: path.path) else {
             throw ToolError.notFound(path: path.path)
         }
         guard try !isDirectory(url) else { throw ToolError.notAFile(path: path.path) }
 
-        let total = (try? fileManager.attributesOfItem(atPath: path.path)[.size] as? Int) ?? 0
         let handle: FileHandle
         do {
             handle = try FileHandle(forReadingFrom: url)
@@ -188,80 +146,28 @@ public struct SystemFilesystemStore: FilesystemStore {
         }
         defer { try? handle.close() }
 
-        let data = (try? handle.read(upToCount: maximumBytes)) ?? Data()
-        guard let decoded = Self.decode(data, truncated: data.count < (total ?? 0)) else {
-            throw ToolError.undecodableText(path: path.path)
+        while true {
+            let chunk: Data?
+            do {
+                chunk = try handle.read(upToCount: chunkBytes)
+            } catch {
+                throw mapError(error, path: path.path)
+            }
+            guard let chunk, !chunk.isEmpty, try body(chunk) else { return }
         }
-        return TextContent(
-            text: decoded.text, encodingName: decoded.encodingName, bytesRead: data.count,
-            totalBytes: total ?? data.count)
     }
 
     public func grep(
-        _ scope: ScopedPath, pattern: String, ignoreCase: Bool, namePattern: String?,
-        maximumMatches: Int, maximumFiles: Int, maximumFileBytes: Int
+        _ scope: ScopedPath, expression: NSRegularExpression, nameExpression: NSRegularExpression?,
+        limit: Int, offset: Int, maximumFiles: Int, maximumFileBytes: Int, lineWidth: Int,
+        expired: () -> Bool
     ) throws -> GrepPage {
-        let root = URL(fileURLWithPath: scope.path)
-        guard try isDirectory(root) else { throw ToolError.notADirectory(path: scope.path) }
-
-        let expression = try NSRegularExpression(
-            pattern: pattern, options: ignoreCase ? [.caseInsensitive] : [])
-        let nameExpression = try namePattern.map {
-            try NSRegularExpression(pattern: $0, options: [.caseInsensitive])
-        }
-
-        var matches: [GrepPage.Match] = []
-        var scanned = 0
-        var skipped = 0
-        var truncated = false
-
-        let enumerator = fileManager.enumerator(
-            at: root, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants])
-
-        while let url = enumerator?.nextObject() as? URL {
-            if matches.count >= maximumMatches || scanned >= maximumFiles {
-                truncated = true
-                break
-            }
-            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-            guard values?.isRegularFile == true else { continue }
-
-            if let nameExpression {
-                let name = url.lastPathComponent
-                let range = NSRange(name.startIndex..<name.endIndex, in: name)
-                guard nameExpression.firstMatch(in: name, range: range) != nil else { continue }
-            }
-            guard (values?.fileSize ?? 0) <= maximumFileBytes else {
-                skipped += 1
-                continue
-            }
-            guard let data = try? Data(contentsOf: url), !Self.looksBinary(data),
-                let text = Self.decode(data, truncated: false)?.text
-            else {
-                skipped += 1
-                continue
-            }
-            scanned += 1
-
-            for (index, line) in text.split(separator: "\n", omittingEmptySubsequences: false)
-                .enumerated()
-            {
-                guard matches.count < maximumMatches else {
-                    truncated = true
-                    break
-                }
-                let candidate = String(line)
-                let range = NSRange(candidate.startIndex..<candidate.endIndex, in: candidate)
-                if expression.firstMatch(in: candidate, range: range) != nil {
-                    matches.append(
-                        GrepPage.Match(path: url.path, lineNumber: index + 1, line: candidate))
-                }
-            }
-        }
-
-        return GrepPage(
-            matches: matches, filesScanned: scanned, filesSkipped: skipped, truncated: truncated)
+        FolderScan.grep(
+            rootChildren: try folder(scope), expression: expression, nameExpression: nameExpression,
+            limit: limit, offset: offset, maximumFiles: maximumFiles,
+            maximumFileBytes: maximumFileBytes, lineWidth: lineWidth, expired: expired,
+            children: children(of:),
+            contents: { try? Data(contentsOf: URL(fileURLWithPath: $0.path)) })
     }
 
     public func tags(of path: ScopedPath) throws -> [String] {
@@ -418,7 +324,7 @@ public struct SystemFilesystemStore: FilesystemStore {
     // MARK: - Helpers
 
     private static let entryKeys: Set<URLResourceKey> = [
-        .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey,
+        .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .isPackageKey, .fileSizeKey,
         .contentModificationDateKey, .isHiddenKey, .nameKey,
     ]
 
@@ -434,9 +340,30 @@ public struct SystemFilesystemStore: FilesystemStore {
         (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true
     }
 
-    private func entry(at url: URL, hashCeilingBytes: Int) -> FileEntry {
+    /// Everything directly inside a folder, hidden items included, unhashed and in no
+    /// order; `nil` when the folder cannot be listed, which a walk counts and says.
+    private func children(of directory: String) -> [FileEntry]? {
+        let urls = try? fileManager.contentsOfDirectory(
+            at: URL(fileURLWithPath: directory), includingPropertiesForKeys: Array(Self.entryKeys))
+        return urls?.map(entry(at:))
+    }
+
+    /// The folder a tool was pointed at. Unlike a folder met during a walk, failing to
+    /// list this one is the tool's error to report, with the reason.
+    private func folder(_ path: ScopedPath) throws -> [FileEntry] {
+        let url = URL(fileURLWithPath: path.path)
+        guard try isDirectory(url) else { throw ToolError.notADirectory(path: path.path) }
+        do {
+            return try fileManager.contentsOfDirectory(
+                at: url, includingPropertiesForKeys: Array(Self.entryKeys)
+            ).map(entry(at:))
+        } catch {
+            throw mapError(error, path: path.path)
+        }
+    }
+
+    private func entry(at url: URL) -> FileEntry {
         let values = try? url.resourceValues(forKeys: Self.entryKeys)
-        let size = values?.fileSize ?? 0
 
         let kind: FileKind
         if values?.isSymbolicLink == true {
@@ -456,21 +383,22 @@ public struct SystemFilesystemStore: FilesystemStore {
             kind = .other
         }
 
-        var hash: String?
-        var hashNote: String?
-        if kind == .file, hashCeilingBytes > 0 {
-            if size > hashCeilingBytes {
-                hashNote = "too large to hash"
-            } else {
-                hash = Self.contentHash(of: url)
-                if hash == nil { hashNote = "unreadable" }
-            }
-        }
-
         return FileEntry(
             path: url.path, name: values?.name ?? url.lastPathComponent, kind: kind,
-            sizeBytes: size, modifiedAt: values?.contentModificationDate,
-            isHidden: values?.isHidden ?? false, contentHash: hash, hashNote: hashNote)
+            sizeBytes: values?.fileSize ?? 0, modifiedAt: values?.contentModificationDate,
+            isHidden: values?.isHidden ?? false,
+            isSymbolicLink: values?.isSymbolicLink ?? false, isPackage: values?.isPackage ?? false)
+    }
+
+    /// `entry` with its content hash, or with the reason it has none. A ceiling of zero
+    /// means hashing was not asked for.
+    private func hashed(_ entry: FileEntry, ceilingBytes: Int) -> FileEntry {
+        guard entry.kind == .file, ceilingBytes > 0 else { return entry }
+        guard entry.sizeBytes <= ceilingBytes else {
+            return entry.withHash(nil, note: "too large to hash")
+        }
+        let hash = Self.contentHash(of: URL(fileURLWithPath: entry.path))
+        return entry.withHash(hash, note: hash == nil ? "unreadable" : nil)
     }
 
     /// First 16 hex characters of the file's SHA-256, read in chunks so a large file does
@@ -483,50 +411,6 @@ public struct SystemFilesystemStore: FilesystemStore {
             digest.update(data: chunk)
         }
         return digest.finalize().map { String(format: "%02x", $0) }.joined().prefix(16).description
-    }
-
-    /// A NUL byte in the first few kilobytes is how every text tool has told binary from
-    /// text for fifty years, and it is right often enough to be the rule here too.
-    static func looksBinary(_ data: Data) -> Bool {
-        data.prefix(8_000).contains(0)
-    }
-
-    /// UTF-8 first, then a byte-order mark, then whatever `NSString` guesses, then Latin-1
-    /// as the encoding that can decode any byte sequence at all.
-    ///
-    /// A truncated read can cut a multi-byte character in half, so up to three trailing
-    /// bytes are dropped before giving up on UTF-8 — otherwise a byte cap in the middle of
-    /// an accented word would report the whole file as undecodable.
-    static func decode(_ data: Data, truncated: Bool) -> (text: String, encodingName: String)? {
-        guard !looksBinary(data) else { return nil }
-
-        if let text = String(data: data, encoding: .utf8) { return (text, "UTF-8") }
-        if truncated {
-            for trim in 1...3 where data.count > trim {
-                if let text = String(data: data.dropLast(trim), encoding: .utf8) {
-                    return (text, "UTF-8")
-                }
-            }
-        }
-
-        let bom = Array(data.prefix(2))
-        if bom == [0xFF, 0xFE] || bom == [0xFE, 0xFF],
-            let text = String(data: data, encoding: .utf16)
-        {
-            return (text, "UTF-16")
-        }
-
-        var converted: NSString?
-        let guessed = NSString.stringEncoding(
-            for: data, encodingOptions: nil, convertedString: &converted,
-            usedLossyConversion: nil)
-        if guessed != 0, let converted {
-            return (converted as String, String.localizedName(of: String.Encoding(rawValue: guessed)))
-        }
-
-        if let text = String(data: data, encoding: .isoLatin1) { return (text, "ISO Latin 1") }
-        if let text = String(data: data, encoding: .macOSRoman) { return (text, "Mac OS Roman") }
-        return nil
     }
 
     /// Non-overlapping occurrences, which is what `replacingOccurrences` will replace.

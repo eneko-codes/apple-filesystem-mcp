@@ -26,13 +26,13 @@ Not affiliated with or endorsed by Apple Inc.
 
 | Tool | Kind | What it does |
 |---|---|---|
-| `filesystem_status` | read | Reports the read and write scopes and whether macOS is actually letting this process reach them. Reads no file contents. |
-| `filesystem_list` | read | One row per item directly inside a folder: kind, name, size, modification date and a content hash. Does not recurse. |
+| `filesystem_status` | read | Reports the read and write scopes, a page of configured folders at a time, and whether macOS is actually letting this process reach them. Reads no file contents. |
+| `filesystem_list` | read | One row per item directly inside a folder, a page at a time, folders first: kind, name, size, modification date and a content hash. Does not recurse. |
 | `filesystem_stat` | read | Full metadata for one file or folder, including whether this process can actually read and write it — a different question from whether the scope allows it. |
-| `filesystem_tree` | read | A depth-limited, indented tree of a folder's contents. Sizes only, no hashes. |
-| `filesystem_read_text` | read | A text file's contents, with the encoding guessed (UTF-8, UTF-16, ISO Latin 1, Mac OS Roman, else whatever Foundation infers) and the answer saying which one decoded it. |
-| `filesystem_grep` | read | Walks a folder and returns every line matching a regular expression, with path and line number. The fallback for what Spotlight has not indexed. |
-| `filesystem_tags_get` | read | Lists the Finder tags on one file or folder. |
+| `filesystem_tree` | read | A depth-limited, indented tree of a folder's contents, a page of entries at a time. Sizes only, no hashes. |
+| `filesystem_read_text` | read | A text file's contents, a window of characters at a time, with the encoding guessed (UTF-8, UTF-16 by its byte-order mark, else whatever Foundation infers, ISO Latin 1, Mac OS Roman) and the answer saying which one decoded it. |
+| `filesystem_grep` | read | Walks a folder and returns the lines matching a regular expression, a page at a time, with path and line number. The fallback for what Spotlight has not indexed. |
+| `filesystem_tags_get` | read | Lists the Finder tags on one file or folder, a page at a time. |
 | `filesystem_write` | **destructive** | Creates, replaces or appends to a text file. Replacing requires `overwrite=true`. |
 | `filesystem_edit` | **destructive** | Replaces one exact, literal string in a text file with another. Refuses to write unless the number of matches equals `expected_count`. |
 | `filesystem_mkdir` | write | Creates a folder. Missing intermediate folders are created by default. |
@@ -88,7 +88,34 @@ in the open, rather than a heuristic buried in this server.
 **This server reads files, not the meaning of their contents.** There is no content index,
 no PDF text extraction and no OCR. `filesystem_grep` walks the files itself, which is slow,
 so scope it to the smallest folder that could hold the answer — and note it stops at a cap
-on matches, files scanned and bytes per file rather than running forever.
+on files searched, bytes per file and time rather than running forever.
+
+**Every result is bounded, and says what it left out.** A folder's items, a tree's
+entries, a search's matching lines, a file's tags and the configured folders come one page
+at a time, in an order the result states; a file's text comes one window of characters at
+a time. When a result does not hold everything, its first lines say how much there is and
+the exact arguments that return the rest: `limit` and `offset` for rows,
+`character_offset` and `max_characters` for text. A number outside its range (`limit`,
+`offset`, `depth`, a window) is moved to the nearest allowed value and the first lines say
+which one was used; `expected_count` is refused instead, because the nearest value would
+assert something else, and so is a value of the wrong type. The sizes are constants in
+`ToolCatalog.swift`, which the schemas and descriptions quote. No result is longer than
+`ToolStandard.longestResult`: each tool keeps to that itself, and the protocol layer cuts,
+with a notice, any result that did not.
+
+**A window is in characters; the bytes behind it are streamed.** `filesystem_read_text`
+counts characters, and a character's position is only known by decoding everything before
+it, so every call reads the file from its first byte. What is bounded is memory, not
+reach: a UTF-8 file goes by one chunk at a time and only the window is kept, so a file of
+any size can be read to its end, more slowly the larger it is. Any other encoding has to
+be decoded from the whole file at once, so such a file is read only up to 16 MB.
+
+**Every call is bounded in time.** A scan (hashing a page of a listing, walking a tree, a
+grep, counting a file's characters) that takes more than 100 seconds returns what it has
+and says it is partial, or says how to ask for less. A call still running after 180
+seconds is abandoned and answered with an error. A read changes nothing; a write that
+slow, such as a copy to another volume, is not stopped and may still finish, so look at
+the destination before repeating it.
 
 ## Install
 
@@ -220,8 +247,18 @@ the binary in use so you can tell which one answered.
   search and should be scoped to the smallest folder that could hold the answer.
 - **No content index, PDF text extraction or OCR here.** `filesystem_grep` is the only
   content-matching tool, and it reads the bytes itself.
-- **`filesystem_grep` stops early by design**, at a cap on matches found, files scanned and
-  bytes read per file. A truncated search is not an empty one.
+- **`filesystem_grep` stops early by design**, at 5,000 files searched or 100 seconds, and
+  passes over files larger than 4.0 MB, binary files, hidden items, the insides of packages
+  and anything behind a symbolic link. Its first lines say when it stopped and how many
+  files it passed over. A search that stopped is not an empty one.
+- **A page deep into a large tree or search costs as much as everything before it.** Each
+  call walks from the start, so narrowing the folder is cheaper than a large `offset`.
+  `filesystem_tree` states a total only for a tree of at most 10,000 entries.
+- **Each page is a new reading.** A folder that changes between two calls can move a row
+  from one page to the next.
+- **A long copy outlives its answer.** `filesystem_copy`, and `filesystem_move` across
+  volumes, are answered with an error after 180 seconds while the operation carries on;
+  there is no call that reports on it afterwards.
 - **Files above a configured hash ceiling are listed without a hash** in
   `filesystem_list`, to avoid reading a whole folder of large files just to produce a
   listing.
@@ -233,11 +270,13 @@ swift build
 swift test
 ```
 
-The tests (`PathScopeTests` and `CatalogueTests`) run entirely against a
-modelled filesystem whose methods throw (bar `canonicalise` and `probe`, which return values), so a scope test
-that accidentally reached the real disk fails loudly rather than quietly passing. See
-`CLAUDE.md`, whose first section is the hard rule that makes that non-negotiable: no
-agent working in this repository may touch a file outside it.
+The tests never touch the disk. `PathScopeTests` runs against a modelled filesystem whose
+methods throw (bar `canonicalise` and `probe`, which return values), so a scope test that
+accidentally reached the real disk fails loudly rather than quietly passing. The tools
+are driven against `InMemoryStore`, an invented tree held in memory; the walks, the paging
+and the windows it exercises are the same pure code (`FolderScan`, `TextReader`) the real
+store runs. See `CLAUDE.md`, whose first section is the hard rule that makes that
+non-negotiable: no agent working in this repository may touch a file outside it.
 
 Manual verification against real folders is the owner's job, by hand, with MCP
 Inspector.

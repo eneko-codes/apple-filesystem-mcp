@@ -5,7 +5,7 @@ import Foundation
 /// These arrive as command-line arguments because that is how a Claude extension passes
 /// `user_config`: the manifest substitutes `${user_config.key}` into `mcp_config.args`.
 /// Parsing is hand-rolled rather than pulling in an argument-parsing package — the whole
-/// surface is four settings, and every dependency in this repo has to earn its place.
+/// surface is three settings, and every dependency in this repo has to earn its place.
 public struct Configuration: Sendable, Equatable {
 
     /// Folders Claude may look inside. Not a default a caller can widen — a boundary.
@@ -27,9 +27,6 @@ public struct Configuration: Sendable, Equatable {
     /// both would make home-wide read imply home-wide write.
     public var writeRoots: [String] = []
 
-    /// Ceiling on what `filesystem_read_text` will pull across the boundary in one call.
-    public var maximumReadBytes: Int = 1_000_000
-
     /// Files above this are listed without a hash. Hashing a listing means reading every
     /// byte of every file in it, so the ceiling is what keeps `filesystem_list` on a
     /// folder of disk images from turning into a gigabyte of I/O.
@@ -37,12 +34,7 @@ public struct Configuration: Sendable, Equatable {
 
     public init() {}
 
-    public static let readBytesRange = 1_024...20_000_000
     public static let hashBytesRange = 0...1_073_741_824
-
-    /// Paging ceiling. Declared here so the advertised schema and the enforced clamp
-    /// cannot drift: both read this one value.
-    public static let offsetRange = 0...10_000
 
     /// True when an argument is an unsubstituted manifest placeholder.
     ///
@@ -105,10 +97,6 @@ public struct Configuration: Sendable, Equatable {
                 let collected = collectList(from: index)
                 configuration.writeRoots = collected.values
                 index = collected.next
-
-            case "--max-read-bytes":
-                if let number = clamped(readBytesRange) { configuration.maximumReadBytes = number }
-                index += 2
 
             case "--max-hash-bytes":
                 if let number = clamped(hashBytesRange) { configuration.maximumHashBytes = number }

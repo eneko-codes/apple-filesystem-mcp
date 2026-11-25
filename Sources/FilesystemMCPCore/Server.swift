@@ -3,11 +3,12 @@ import Foundation
 public enum FilesystemMCPServer {
 
     public static let name = "apple-filesystem-mcp"
-    public static let version = "1.0.1"
+    public static let version = "2.0.0"
 
     /// Returned from `initialize`. It carries what per-tool descriptions cannot state
-    /// once: the two allow-lists, which sibling server answers which kind of question,
-    /// and the fact that nothing here deletes.
+    /// once: the two allow-lists, that long results come a page or a window at a time,
+    /// which sibling server answers which kind of question, and the fact that nothing
+    /// here deletes.
     public static let instructions = """
         Access to files on this Mac through FileManager. No Finder, no Apple events, no \
         network.
@@ -18,6 +19,18 @@ public enum FilesystemMCPServer {
         against the right list before anything happens. A path outside its list is refused \
         and the error names the configured scope. Call filesystem_status first: it reports \
         both lists and whether macOS is actually letting this process reach them.
+
+        LONG RESULTS COME IN PARTS. filesystem_list, filesystem_tree, filesystem_grep, \
+        filesystem_tags_get and filesystem_status return one page of rows, and \
+        filesystem_read_text one window of a file's characters. When a result does not hold \
+        everything, its first lines say how much there is and the exact arguments that \
+        return the rest: limit and offset for rows, character_offset and max_characters for \
+        text. A size or a count outside its range is moved to the nearest allowed value and \
+        the first lines say which one was used. A scan (hashing a page, walking a tree, a \
+        grep) that takes more than \(FilesystemTools.defaultScanBudget.components.seconds) \
+        seconds returns what it has and says it is partial; a call still running after \
+        \(FilesystemTools.defaultTimeout.components.seconds) seconds is answered with an \
+        error, and if it was a write it may still finish, so look before repeating it.
 
         Searching, PDF text and OCR are three separate MCP servers, not tools here: \
         apple-spotlight-mcp's spotlight_search finds a word inside a file without opening \
@@ -52,16 +65,12 @@ public enum FilesystemMCPServer {
     ) async {
         Diagnostics.started(version: version)
         await serveStandardStreams(
-            handler: handler(
-                tools: FilesystemTools(store: store, configuration: configuration),
-                configuration: configuration))
+            handler: handler(tools: FilesystemTools(store: store, configuration: configuration)))
     }
 
-    /// The configuration is passed again because the catalogue's descriptions are built
-    /// from it, not only the tools.
-    public static func handler(tools: FilesystemTools, configuration: Configuration) -> MCPHandler {
+    public static func handler(tools: FilesystemTools) -> MCPHandler {
         MCPHandler(
             name: name, version: version, instructions: instructions,
-            catalog: ToolCatalog.all(configuration), tools: tools)
+            catalog: ToolCatalog.all(), tools: tools)
     }
 }
