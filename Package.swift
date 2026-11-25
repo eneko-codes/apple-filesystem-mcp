@@ -4,16 +4,10 @@ import PackageDescription
 let package = Package(
     name: "apple-filesystem-mcp",
     platforms: [.macOS("26.0")],
-    dependencies: [
-        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.1")
-    ],
     targets: [
         // All logic lives here so the tests can import it. The executable target below
         // is only a launcher: an executable target cannot be imported by a test target.
-        .target(
-            name: "FilesystemMCPCore",
-            dependencies: [.product(name: "MCP", package: "swift-sdk")]
-        ),
+        .target(name: "FilesystemMCPCore"),
         .executableTarget(
             name: "apple-filesystem-mcp",
             dependencies: ["FilesystemMCPCore"],
