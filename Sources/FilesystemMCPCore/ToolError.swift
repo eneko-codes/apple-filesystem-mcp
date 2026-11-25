@@ -8,19 +8,42 @@ public enum ToolError: Error, Equatable {
         writeRoots: [String])
     case missingArgument(String)
     case badArgument(name: String, reason: String)
-    case badRegex(pattern: String, reason: String)
+    case unknownTool(String)
+    case unknownArguments(tool: String, unknown: [String], allowed: [String])
+    case badRegex(argument: String, pattern: String)
     case notFound(path: String)
     case alreadyExists(path: String)
     case notADirectory(path: String)
     case notAFile(path: String)
     case permissionDenied(path: String, detail: String)
-    case fileTooLarge(path: String, bytes: Int, maximum: Int)
+    case tooLargeToDecode(path: String, bytes: Int?, maximum: Int)
+    case readTimeLimit(path: String, bytesRead: Int, seconds: Int)
     case undecodableText(path: String)
     case editTextNotFound(path: String, find: String)
     case editTextAmbiguous(path: String, find: String, found: Int)
     case destinationInsideSource(from: String, to: String)
     case confirmationRequired(action: String)
     case storeFailure(String)
+    case timedOut(tool: String, seconds: Int)
+
+    /// How many configured folders an error lists before it counts the others.
+    static let rootsShown = 5
+
+    /// How much of a description written by the system an error repeats.
+    static let detailWidth = 500
+
+    private static func clipped(_ detail: String) -> String {
+        detail.count > detailWidth ? String(detail.prefix(detailWidth)) + "…" : detail
+    }
+
+    /// The first few folders, and how many more there are.
+    private static func few(_ roots: [String]) -> String {
+        guard !roots.isEmpty else { return "(none configured)" }
+        let shown = roots.prefix(rootsShown).joined(separator: ", ")
+        let others = roots.count - rootsShown
+        return others > 0
+            ? "\(shown), and \(others) more (\(ToolCatalog.statusName) lists them all)" : shown
+    }
 
     public var message: String {
         switch self {
@@ -51,7 +74,7 @@ public enum ToolError: Error, Equatable {
         case .pathOutOfScope(let requested, let resolved, let access, let readRoots, let writeRoots):
             let list = access == .read ? readRoots : writeRoots
             let label = access == .read ? "Readable folders" : "Writable folders"
-            let scope = list.isEmpty ? "(none configured)" : list.joined(separator: ", ")
+            let scope = Self.few(list)
             let resolution =
                 resolved == requested
                 ? "" : "\n\nIt resolves to:\n  \(resolved)\n(symlinks and .. are followed before the check, always)."
@@ -80,11 +103,19 @@ public enum ToolError: Error, Equatable {
         case .badArgument(let name, let reason):
             return "Argument '\(name)' is not valid: \(reason)"
 
-        case .badRegex(let pattern, let reason):
-            return """
-                'pattern' is not a valid regular expression: /\(pattern)/
+        case .unknownTool(let name):
+            return "'\(ToolStandard.echo(name))' is not a tool of this server."
 
-                \(reason)
+        case .unknownArguments(let tool, let unknown, let allowed):
+            let shown = unknown.prefix(Self.rootsShown).map { "'\(ToolStandard.echo($0))'" }
+            let others = unknown.count - shown.count
+            let names = shown.joined(separator: ", ") + (others > 0 ? ", and \(others) more" : "")
+            let list = allowed.isEmpty ? "none" : allowed.joined(separator: ", ")
+            return "\(tool) has no argument \(names). It takes: \(list). Nothing was run."
+
+        case .badRegex(let argument, let pattern):
+            return """
+                '\(argument)' is not a valid regular expression: /\(ToolStandard.echo(pattern))/
 
                 filesystem_grep uses ICU regular expressions — the same dialect as
                 NSRegularExpression, close to PCRE. Escape a literal ( ) [ ] { } . * + ? \
@@ -117,7 +148,7 @@ public enum ToolError: Error, Equatable {
 
         case .permissionDenied(let path, let detail):
             return """
-                macOS refused access to '\(path)': \(detail)
+                macOS refused access to '\(path)': \(Self.clipped(detail))
 
                 The path is inside the configured scope, so this is a system permission,
                 not this server's allow-list. Two different grants can be missing:
@@ -137,15 +168,26 @@ public enum ToolError: Error, Equatable {
                 only granted by hand.
                 """
 
-        case .fileTooLarge(let path, let bytes, let maximum):
+        case .tooLargeToDecode(let path, let bytes, let maximum):
+            let size = bytes.map { "is \(Format.bytes($0)) and" } ?? "is"
             return """
-                '\(path)' is \(Format.bytes(bytes)); this call may read at most \
-                \(Format.bytes(maximum)).
+                '\(path)' \(size) not UTF-8, and \(ToolCatalog.readTextName) reads a file \
+                in any other encoding only up to \(Format.bytes(maximum)).
 
-                Raise 'max_bytes' on the call, or raise the extension's own ceiling in
-                Claude Desktop → Settings → Extensions. For a big text file,
-                filesystem_grep is usually the better tool: it returns matching lines
-                instead of the file.
+                UTF-8 can be read a piece at a time, so a UTF-8 file of any size is read. \
+                Every other encoding has to be decoded from the whole file at once. Convert \
+                the file to UTF-8, or split it, to read it here.
+                """
+
+        case .readTimeLimit(let path, let bytesRead, let seconds):
+            return """
+                Reading '\(path)' did not finish within \(seconds) seconds: \
+                \(Format.bytes(bytesRead)) had been read.
+
+                A window is counted in characters, so every call reads the file from its \
+                start, and this file is too large for that. Pass a smaller character_offset to \
+                read an earlier part of it. \(ToolCatalog.grepName) does not search a file \
+                this large either. Nothing was changed.
                 """
 
         case .undecodableText(let path):
@@ -202,7 +244,27 @@ public enum ToolError: Error, Equatable {
                 """
 
         case .storeFailure(let detail):
-            return "The filesystem returned an error: \(detail)"
+            return "The filesystem returned an error: \(Self.clipped(detail))"
+
+        case .timedOut(let tool, let seconds):
+            guard ToolCatalog.writeTools.contains(tool) else {
+                return """
+                    The call did not finish within \(seconds) seconds and was abandoned. It \
+                    only reads, so nothing was changed.
+
+                    macOS may be waiting for a permission to be answered, or a volume may \
+                    have stopped responding. Ask for less: a narrower folder, a smaller \
+                    limit, or hashes=false on \(ToolCatalog.listName).
+                    """
+            }
+            return """
+                The call did not finish within \(seconds) seconds, and this server stopped \
+                waiting for it. The operation itself was NOT stopped: it may still finish, \
+                or it may have been left partly done.
+
+                Do not repeat it blindly. Look at what is there now with \
+                \(ToolCatalog.statName) or \(ToolCatalog.listName) first.
+                """
         }
     }
 }

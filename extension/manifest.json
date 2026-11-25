@@ -2,9 +2,9 @@
   "manifest_version": "0.3",
   "name": "apple-filesystem-mcp",
   "display_name": "Files",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "description": "Read, write and organise files, with separate read and write scopes",
-  "long_description": "A local MCP server written in Swift for the filesystem: directory listing, text reading, writing and editing, moving, copying, and Finder tags.\n\nRead and write scopes are configured separately and on purpose. Give Claude a broad read scope and a narrow write scope, and it can find anything you allow while being able to change almost nothing. Every path is resolved through symlinks and “..” before it is checked, so a scope cannot be walked out of.\n\nThe two folder lists below are the ONE deliberate exception to \"nothing to configure\" in this family of extensions: they are the security boundary itself, not a preference, so there is no sensible default to hardcode in their place. Leaving read scope blank would mean reading nothing; guessing one would mean guessing what may be exposed.\n\nNothing here deletes. filesystem_trash moves an item to the Trash, where you can put it back.\n\nSearching by content, PDF text extraction and OCR moved out to their own extensions — apple-spotlight-mcp, apple-pdf-mcp and apple-vision-mcp — each with its own read-only folder scope. This one is FileManager only.\n\nNot affiliated with or endorsed by Apple Inc.",
+  "long_description": "A local MCP server written in Swift for the filesystem: directory listing, text reading, writing and editing, moving, copying, and Finder tags.\n\nRead and write scopes are configured separately and on purpose. Give Claude a broad read scope and a narrow write scope, and it can find anything you allow while being able to change almost nothing. Every path is resolved through symlinks and “..” before it is checked, so a scope cannot be walked out of.\n\nThe two folder lists below are the ONE deliberate exception to \"nothing to configure\" in this family of extensions: they are the security boundary itself, not a preference, so there is no sensible default to hardcode in their place. Leaving read scope blank would mean reading nothing; guessing one would mean guessing what may be exposed.\n\nNothing here deletes. filesystem_trash moves an item to the Trash, where you can put it back.\n\nEvery result is bounded. Folder listings, trees, search matches, tags and the configured folders come one page at a time, and a file's text one window of characters at a time; when a result does not hold everything, its first lines say how much there is and the exact arguments that return the rest (limit and offset, or character_offset and max_characters). A number outside its range is moved to the nearest allowed value, and the result says which one was used. A scan that takes more than 100 seconds returns what it has and says it is partial, and a call still running after 180 seconds is answered with an error; a write that slow may still finish.\n\nSearching by content, PDF text extraction and OCR moved out to their own extensions — apple-spotlight-mcp, apple-pdf-mcp and apple-vision-mcp — each with its own read-only folder scope. This one is FileManager only.\n\nNot affiliated with or endorsed by Apple Inc.",
   "author": {
     "name": "eneko-codes",
     "url": "https://github.com/eneko-codes"
@@ -38,11 +38,11 @@
   "tools": [
     {
       "name": "filesystem_status",
-      "description": "Reports which folders this server may read, which it may change, and whether macOS is actually letting it reach them. Reads no file contents."
+      "description": "Reports which folders this server may read and which it may change, one page at a time, and whether macOS is actually letting it reach them. Reads no file contents."
     },
     {
       "name": "filesystem_list",
-      "description": "One row per item directly inside a folder: kind, name, size, modification date and a content hash. Does not recurse — use filesystem_tree for that."
+      "description": "One row per item directly inside a folder, one page at a time, folders first: kind, name, size, modification date and a content hash; limit and offset reach the rest. Does not recurse — use filesystem_tree for that."
     },
     {
       "name": "filesystem_stat",
@@ -50,19 +50,19 @@
     },
     {
       "name": "filesystem_tree",
-      "description": "Walks a folder to a bounded depth and returns an indented tree of what is in it. Sizes only; no hashes — filesystem_list is where a row carries everything."
+      "description": "Walks a folder to a bounded depth and returns an indented tree of what is in it, one page at a time; limit and offset reach the rest. Sizes only; no hashes — filesystem_list is where a row carries everything."
     },
     {
       "name": "filesystem_read_text",
-      "description": "Returns a text file's contents, with the encoding guessed rather than assumed: UTF-8, then UTF-16 by its byte-order mark, then ISO Latin 1, then Mac OS Roman. The answer says which one decoded it."
+      "description": "Returns a text file's contents one window of characters at a time (character_offset and max_characters), with the encoding guessed rather than assumed: UTF-8, then UTF-16 by its byte-order mark, then ISO Latin 1 or Mac OS Roman. The answer says which one decoded it."
     },
     {
       "name": "filesystem_grep",
-      "description": "Walks a folder and returns every line matching a regular expression, with its path and line number. The tool for a pattern rather than a word, and the fallback for what Spotlight has not indexed."
+      "description": "Walks a folder and returns the lines matching a regular expression, one page at a time, with path and line number; limit and offset reach the rest. The tool for a pattern rather than a word, and the fallback for what Spotlight has not indexed."
     },
     {
       "name": "filesystem_tags_get",
-      "description": "Lists the Finder tags on one file or folder. Tags are an ordinary extended attribute, so they are readable without opening the file, and they are how many people actually organise a folder that…"
+      "description": "Lists the Finder tags on one file or folder, one page at a time. Tags are an ordinary extended attribute, so they are readable without opening the file."
     },
     {
       "name": "filesystem_write",

@@ -51,10 +51,16 @@ public struct FileEntry: Sendable, Equatable {
     public let contentHash: String?
     /// Why `contentHash` is nil, when the reason is worth showing ("too large").
     public let hashNote: String?
+    /// True for a link whatever it points at. `kind` already describes the destination;
+    /// this is what lets a walk refuse to follow it.
+    public let isSymbolicLink: Bool
+    /// A folder the Finder shows as one file, such as an application.
+    public let isPackage: Bool
 
     public init(
         path: String, name: String, kind: FileKind, sizeBytes: Int, modifiedAt: Date?,
-        isHidden: Bool, contentHash: String? = nil, hashNote: String? = nil
+        isHidden: Bool, contentHash: String? = nil, hashNote: String? = nil,
+        isSymbolicLink: Bool = false, isPackage: Bool = false
     ) {
         self.path = path
         self.name = name
@@ -64,6 +70,34 @@ public struct FileEntry: Sendable, Equatable {
         self.isHidden = isHidden
         self.contentHash = contentHash
         self.hashNote = hashNote
+        self.isSymbolicLink = isSymbolicLink
+        self.isPackage = isPackage
+    }
+
+    /// The same entry with the outcome of hashing it.
+    func withHash(_ contentHash: String?, note: String?) -> FileEntry {
+        FileEntry(
+            path: path, name: name, kind: kind, sizeBytes: sizeBytes, modifiedAt: modifiedAt,
+            isHidden: isHidden, contentHash: contentHash, hashNote: note,
+            isSymbolicLink: isSymbolicLink, isPackage: isPackage)
+    }
+}
+
+/// One page of a folder's items.
+public struct FileListing: Sendable, Equatable {
+    public let entries: [FileEntry]
+    /// Every item the listing shows, on this page or another.
+    public let total: Int
+    /// Hidden items left out because they were not asked for.
+    public let hidden: Int
+    /// True when hashing ran out of time, so the page holds fewer rows than were asked for.
+    public let stoppedForTime: Bool
+
+    public init(entries: [FileEntry], total: Int, hidden: Int, stoppedForTime: Bool) {
+        self.entries = entries
+        self.total = total
+        self.hidden = hidden
+        self.stoppedForTime = stoppedForTime
     }
 }
 
@@ -102,72 +136,132 @@ public struct FileStat: Sendable, Equatable {
     }
 }
 
-/// A depth-limited walk. `truncated` is set when the entry ceiling stopped it, so a
-/// partial tree is never mistaken for a complete one.
+/// One page of a depth-limited walk.
 public struct FileTree: Sendable, Equatable {
     public struct Node: Sendable, Equatable {
         public let entry: FileEntry
         public let depth: Int
+        /// A folder the walk tried to open and could not, so nothing is shown under it.
+        public let couldNotBeListed: Bool
 
-        public init(entry: FileEntry, depth: Int) {
+        public init(entry: FileEntry, depth: Int, couldNotBeListed: Bool = false) {
             self.entry = entry
             self.depth = depth
+            self.couldNotBeListed = couldNotBeListed
         }
     }
 
     public let root: String
+    public let maximumDepth: Int
     public let nodes: [Node]
-    public let truncated: Bool
+    /// Every entry of the tree, or `nil` when the walk stopped before reaching its end, so
+    /// a partial tree is never mistaken for a complete one.
+    public let total: Int?
+    /// How many entries the walk reached, on this page or before it.
+    public let walked: Int
+    /// Hidden items met in the folders walked and left out because they were not asked for.
+    public let hidden: Int
+    /// Folders the walk could not open, on this page or before it.
+    public let foldersNotListed: Int
+    public let stoppedForTime: Bool
 
-    public init(root: String, nodes: [Node], truncated: Bool) {
+    public init(
+        root: String, maximumDepth: Int, nodes: [Node], total: Int?, walked: Int, hidden: Int,
+        foldersNotListed: Int, stoppedForTime: Bool
+    ) {
         self.root = root
+        self.maximumDepth = maximumDepth
         self.nodes = nodes
-        self.truncated = truncated
+        self.total = total
+        self.walked = walked
+        self.hidden = hidden
+        self.foldersNotListed = foldersNotListed
+        self.stoppedForTime = stoppedForTime
     }
 }
 
 // MARK: - Content
 
-public struct TextContent: Sendable, Equatable {
+/// A window of a text file's characters.
+public struct TextWindow: Sendable, Equatable {
     public let text: String
-    /// Name of the encoding that decoded cleanly, or the one that was assumed.
+    /// Characters in the whole file, of which `text` is a part. When `isWholeFile` is
+    /// false it is only how many were counted before the time ran out.
+    public let totalCharacters: Int
+    /// Name of the encoding that decoded cleanly.
     public let encodingName: String
-    public let bytesRead: Int
+    /// The file's size, or how much of it was read when `isWholeFile` is false.
     public let totalBytes: Int
-    public var truncated: Bool { bytesRead < totalBytes }
+    /// False when the time ran out after the window was cut but before the file ended, so
+    /// its length is not known.
+    public let isWholeFile: Bool
 
-    public init(text: String, encodingName: String, bytesRead: Int, totalBytes: Int) {
+    public init(
+        text: String, totalCharacters: Int, encodingName: String, totalBytes: Int,
+        isWholeFile: Bool = true
+    ) {
         self.text = text
+        self.totalCharacters = totalCharacters
         self.encodingName = encodingName
-        self.bytesRead = bytesRead
         self.totalBytes = totalBytes
+        self.isWholeFile = isWholeFile
     }
 }
 
+/// One page of matching lines.
 public struct GrepPage: Sendable, Equatable {
     public struct Match: Sendable, Equatable {
         public let path: String
         public let lineNumber: Int
+        /// The line without the white space around it, cut to the width a row may take.
         public let line: String
+        public let isClipped: Bool
 
-        public init(path: String, lineNumber: Int, line: String) {
+        public init(path: String, lineNumber: Int, line: String, isClipped: Bool = false) {
             self.path = path
             self.lineNumber = lineNumber
             self.line = line
+            self.isClipped = isClipped
         }
     }
 
-    public let matches: [Match]
-    public let filesScanned: Int
-    public let filesSkipped: Int
-    /// True when the match limit or the file ceiling cut the walk short.
-    public let truncated: Bool
+    /// Why the scan ended.
+    public enum Stop: Sendable, Equatable {
+        /// Every file was searched.
+        case finished
+        /// The page was full and one more match was met, so more exist.
+        case pageFull
+        /// The ceiling on files searched was reached with files still unread.
+        case fileCeiling
+        case timeLimit
+    }
 
-    public init(matches: [Match], filesScanned: Int, filesSkipped: Int, truncated: Bool) {
+    public let matches: [Match]
+    /// Matches met before the scan ended, on this page or before it.
+    public let matchesFound: Int
+    public let filesSearched: Int
+    /// Files passed over because they are larger than one scan reads.
+    public let filesTooLarge: Int
+    /// Files passed over because they are binary or in no encoding that could be decoded.
+    public let filesNotText: Int
+    /// Files that could not be opened.
+    public let filesNotRead: Int
+    /// Folders that could not be opened, so nothing under them was searched.
+    public let foldersNotListed: Int
+    public let stop: Stop
+
+    public init(
+        matches: [Match], matchesFound: Int, filesSearched: Int, filesTooLarge: Int,
+        filesNotText: Int, filesNotRead: Int, foldersNotListed: Int, stop: Stop
+    ) {
         self.matches = matches
-        self.filesScanned = filesScanned
-        self.filesSkipped = filesSkipped
-        self.truncated = truncated
+        self.matchesFound = matchesFound
+        self.filesSearched = filesSearched
+        self.filesTooLarge = filesTooLarge
+        self.filesNotText = filesNotText
+        self.filesNotRead = filesNotRead
+        self.foldersNotListed = foldersNotListed
+        self.stop = stop
     }
 }
 
@@ -190,12 +284,19 @@ public struct RootProbe: Sendable, Equatable {
     /// Set when the configured root does not canonicalise to itself — a symlinked root
     /// silently governs a different subtree than the one that was typed.
     public let canonicalPath: String?
+    /// A write root outside every read root. It governs nothing, because a write has to
+    /// satisfy the read check too.
+    public let isStranded: Bool
 
-    public init(path: String, access: Access, state: RootState, canonicalPath: String? = nil) {
+    public init(
+        path: String, access: Access, state: RootState, canonicalPath: String? = nil,
+        isStranded: Bool = false
+    ) {
         self.path = path
         self.access = access
         self.state = state
         self.canonicalPath = canonicalPath
+        self.isStranded = isStranded
     }
 }
 

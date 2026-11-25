@@ -31,19 +31,22 @@ struct StubStore: FilesystemStore {
         .storeFailure("a scope test reached the filesystem, which it must never do")
     }
 
-    func list(_ path: ScopedPath, includeHidden: Bool, hashCeilingBytes: Int) throws -> [FileEntry] {
-        throw unreachable()
-    }
+    func list(
+        _ path: ScopedPath, includeHidden: Bool, hashCeilingBytes: Int, limit: Int, offset: Int,
+        expired: () -> Bool
+    ) throws -> FileListing { throw unreachable() }
     func stat(_ path: ScopedPath, hashCeilingBytes: Int) throws -> FileStat { throw unreachable() }
-    func tree(_ path: ScopedPath, maximumDepth: Int, includeHidden: Bool, entryLimit: Int) throws
-        -> FileTree
-    { throw unreachable() }
-    func readText(_ path: ScopedPath, maximumBytes: Int) throws -> TextContent {
+    func tree(
+        _ path: ScopedPath, maximumDepth: Int, includeHidden: Bool, limit: Int, offset: Int,
+        countCeiling: Int, expired: () -> Bool
+    ) throws -> FileTree { throw unreachable() }
+    func read(_ path: ScopedPath, chunkBytes: Int, _ body: (Data) throws -> Bool) throws {
         throw unreachable()
     }
     func grep(
-        _ scope: ScopedPath, pattern: String, ignoreCase: Bool, namePattern: String?,
-        maximumMatches: Int, maximumFiles: Int, maximumFileBytes: Int
+        _ scope: ScopedPath, expression: NSRegularExpression, nameExpression: NSRegularExpression?,
+        limit: Int, offset: Int, maximumFiles: Int, maximumFileBytes: Int, lineWidth: Int,
+        expired: () -> Bool
     ) throws -> GrepPage { throw unreachable() }
     func tags(of path: ScopedPath) throws -> [String] { throw unreachable() }
     func write(_ text: String, to path: ScopedPath, append: Bool) throws -> WriteOutcome {

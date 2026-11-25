@@ -128,12 +128,14 @@ public struct PathScope: Sendable {
     /// carried alongside when it differs, because a symlinked root governs a subtree
     /// nobody typed and that is worth seeing before it surprises someone.
     public func probeRoots() -> [RootProbe] {
+        let stranded = Set(strandedWriteRoots)
         func probes(_ configured: [String], _ access: Access) -> [RootProbe] {
             configured.map { raw in
                 let canonical = (try? store.canonicalise(raw)).map { Self.normalise($0.path) }
                 return RootProbe(
                     path: raw, access: access, state: store.probe(canonical ?? raw),
-                    canonicalPath: canonical == raw ? nil : canonical)
+                    canonicalPath: canonical == raw ? nil : canonical,
+                    isStranded: access == .write && canonical.map(stranded.contains) == true)
             }
         }
         return probes(configuredReadRoots, .read) + probes(configuredWriteRoots, .write)

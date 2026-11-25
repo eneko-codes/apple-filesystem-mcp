@@ -30,22 +30,34 @@ public protocol FilesystemStore: Sendable {
 
     // MARK: Reads
 
-    func list(_ path: ScopedPath, includeHidden: Bool, hashCeilingBytes: Int) throws -> [FileEntry]
+    /// One page of a folder, folders first and then by name. Only the rows on the page are
+    /// hashed, and none when `hashCeilingBytes` is zero. `expired` is asked between rows.
+    func list(
+        _ path: ScopedPath, includeHidden: Bool, hashCeilingBytes: Int, limit: Int, offset: Int,
+        expired: () -> Bool
+    ) throws -> FileListing
 
     func stat(_ path: ScopedPath, hashCeilingBytes: Int) throws -> FileStat
 
+    /// One page of a depth-first walk. The walk counts the tree only as far as
+    /// `countCeiling` entries; past that the page has no total.
     func tree(
-        _ path: ScopedPath, maximumDepth: Int, includeHidden: Bool, entryLimit: Int
+        _ path: ScopedPath, maximumDepth: Int, includeHidden: Bool, limit: Int, offset: Int,
+        countCeiling: Int, expired: () -> Bool
     ) throws -> FileTree
 
-    func readText(_ path: ScopedPath, maximumBytes: Int) throws -> TextContent
+    /// Hands a file's bytes to `body` in order, at most `chunkBytes` at a time, until the
+    /// file ends or `body` returns `false`. The file is never held whole, which is what
+    /// lets a file of any size be read.
+    func read(_ path: ScopedPath, chunkBytes: Int, _ body: (Data) throws -> Bool) throws
 
     /// Regex walk over a folder, for what Spotlight (a separate server,
     /// `apple-spotlight-mcp`) has not indexed. `scope` is a directory; the walk never
-    /// leaves it.
+    /// leaves it, and visits it in the order of `tree`.
     func grep(
-        _ scope: ScopedPath, pattern: String, ignoreCase: Bool, namePattern: String?,
-        maximumMatches: Int, maximumFiles: Int, maximumFileBytes: Int
+        _ scope: ScopedPath, expression: NSRegularExpression, nameExpression: NSRegularExpression?,
+        limit: Int, offset: Int, maximumFiles: Int, maximumFileBytes: Int, lineWidth: Int,
+        expired: () -> Bool
     ) throws -> GrepPage
 
     func tags(of path: ScopedPath) throws -> [String]

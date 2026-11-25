@@ -51,10 +51,25 @@ public struct Format: Sendable {
 
     /// A one-line stand-in for a passage of text, for error messages that have to quote
     /// what the caller asked for without pasting a whole file back at them.
-    public static func excerpt(_ text: String, limit: Int = 120) -> String {
-        let flattened = text.replacingOccurrences(of: "\n", with: "⏎")
-        guard flattened.count > limit else { return flattened }
-        return String(flattened.prefix(limit)) + "…"
+    public static func excerpt(_ text: String) -> String {
+        ToolStandard.echo(text.replacingOccurrences(of: "\n", with: "⏎"))
+    }
+
+    /// What an empty page says: nothing is there, or the offset skipped everything.
+    static func nothing(_ none: String, total: Int) -> String {
+        "\n\n  " + (total == 0 ? none : "(nothing at this offset)")
+    }
+
+    static func plural(_ count: Int, _ singular: String, _ plural: String) -> String {
+        "\(count) \(count == 1 ? singular : plural)"
+    }
+
+    /// A list of tags as one field of a larger result, cut to the width such a field may
+    /// take. `isClipped` tells the caller to say so before the data.
+    static func tagsField(_ tags: [String]) -> (text: String, isClipped: Bool) {
+        let joined = tags.map(oneLine).joined(separator: ", ")
+        guard joined.count > ToolCatalog.tagsFieldWidth else { return (joined, false) }
+        return (String(joined.prefix(ToolCatalog.tagsFieldWidth)) + "…", true)
     }
 
     /// Collapses a multi-line value onto one line, so the one-row-per-file contract that
@@ -81,10 +96,13 @@ public struct Format: Sendable {
     /// One row per entry, columns aligned, newest-relevant fields last. The hash is here
     /// so duplicate hunting is Claude's job over raw rows — there is deliberately no
     /// find_duplicates tool, because "how similar is a duplicate" is a judgement.
-    public func entries(_ entries: [FileEntry], root: String, header: String) -> String {
-        guard !entries.isEmpty else {
-            return "\(header)\n\n  (empty)"
-        }
+    ///
+    /// `entries` is the page to show; `total` counts every item the listing holds.
+    public func entries(_ entries: [FileEntry], total: Int, root: String) -> String {
+        let header =
+            "Contents of \(root): \(Self.plural(total, "item", "items")), folders first, then by name."
+        guard !entries.isEmpty else { return header + Self.nothing("(empty)", total: total) }
+
         let nameWidth = min(entries.map { Self.oneLine($0.name).count }.max() ?? 4, 60)
         let sizeWidth = entries.map { Self.bytes($0.sizeBytes).count }.max() ?? 6
 
@@ -104,31 +122,36 @@ public struct Format: Sendable {
             }
             return row
         }
-        return ([header, ""] + rows).joined(separator: "\n")
-            + "\n\n  \(entries.count) entr\(entries.count == 1 ? "y" : "ies") in \(root)"
-            + "\n  Columns: kind, name, size, modified, sha256 (first 16 hex chars)."
+        return (
+            [header, "Columns: kind, name, size, modified, sha256 (first 16 hex characters).", ""]
+                + rows
+        ).joined(separator: "\n")
     }
 
-    public func tree(_ tree: FileTree) -> String {
-        var lines = ["Tree of \(tree.root)", ""]
-        for node in tree.nodes {
+    /// `nodes` is the page to show, which starts `offset` entries into the walk.
+    public func tree(_ tree: FileTree, nodes: [FileTree.Node], offset: Int) -> String {
+        let size: String
+        if let total = tree.total {
+            size = Self.plural(total, "entry", "entries")
+        } else if tree.stoppedForTime {
+            size = "at least \(Self.plural(tree.walked, "entry", "entries"))"
+        } else {
+            size = "more than \(Self.plural(tree.walked, "entry", "entries"))"
+        }
+        let header =
+            "Tree of \(tree.root), \(Self.plural(tree.maximumDepth, "level", "levels")) deep: \(size). "
+            + "Each folder's items are in name order, and a folder is followed by what it holds."
+        guard !nodes.isEmpty else {
+            return header + Self.nothing("(empty)", total: tree.walked)
+        }
+        let rows = nodes.map { node -> String in
             let indent = String(repeating: "  ", count: node.depth)
             let name = Self.oneLine(node.entry.name)
             let suffix =
                 node.entry.kind == .directory ? "/" : "  \(Self.bytes(node.entry.sizeBytes))"
-            lines.append("  \(indent)\(name)\(suffix)")
+            return "  \(indent)\(name)\(suffix)"
         }
-        if tree.nodes.isEmpty { lines.append("  (empty)") }
-        lines.append("")
-        lines.append("  \(tree.nodes.count) entries")
-        if tree.truncated {
-            lines.append(
-                """
-                  TRUNCATED — the entry ceiling stopped the walk, so this is a partial
-                  picture. Lower 'depth', or walk a subfolder.
-                """)
-        }
-        return lines.joined(separator: "\n")
+        return ([header, ""] + rows).joined(separator: "\n")
     }
 
     public func stat(_ stat: FileStat) -> String {
@@ -148,7 +171,7 @@ public struct Format: Sendable {
             ("mode", stat.posixPermissions.map { String(format: "%03o", $0) }),
             ("symlink to", stat.symlinkDestination),
             ("hidden", entry.isHidden ? "yes" : nil),
-            ("tags", stat.tags.isEmpty ? nil : stat.tags.joined(separator: ", ")),
+            ("tags", stat.tags.isEmpty ? nil : Self.tagsField(stat.tags).text),
         ]
         // What this process can actually do with the file, which is a different question
         // from what the allow-list permits and is worth separating in the answer.
@@ -163,39 +186,50 @@ public struct Format: Sendable {
 
     // MARK: Content
 
-    public func text(_ content: TextContent, path: String) -> String {
-        var header = "\(path)\n  \(content.encodingName) · \(Self.bytes(content.totalBytes))"
-        if content.truncated {
-            header +=
-                "\n  TRUNCATED at \(Self.bytes(content.bytesRead)) — raise 'max_bytes' for more."
-        }
-        return header + "\n\n" + content.text
+    /// `part` is the window to show, cut from `window.text`.
+    public func text(_ part: String, of window: TextWindow, path: String) -> String {
+        // When the time ran out the file was only read as far as `totalBytes`, so what is
+        // known about its length is a lower bound.
+        let size =
+            window.isWholeFile
+            ? Self.bytes(window.totalBytes) : "read as far as \(Self.bytes(window.totalBytes))"
+        let counted = Self.plural(window.totalCharacters, "character", "characters")
+        let header =
+            "\(path)\n  \(window.encodingName) · \(size) · "
+            + (window.isWholeFile ? counted : "at least \(counted)")
+        return header + (window.totalCharacters == 0 ? "\n\n  (empty file)" : "\n\n" + part)
     }
 
-    public func grep(_ page: GrepPage, pattern: String, scope: String) -> String {
-        var header =
-            "/\(pattern)/ in \(scope)\n  \(page.matches.count) match"
-            + "\(page.matches.count == 1 ? "" : "es") · \(page.filesScanned) files scanned"
-        if page.filesSkipped > 0 {
-            header += " · \(page.filesSkipped) skipped (binary or too large)"
+    /// `matches` is the page to show, which starts `offset` matches into the scan.
+    public func grep(
+        _ page: GrepPage, matches: [GrepPage.Match], offset: Int, pattern: String, scope: String
+    ) -> String {
+        let files = Self.plural(page.filesSearched, "file", "files")
+        let found = Self.plural(page.matchesFound, "match", "matches")
+        var header = "/\(ToolStandard.echo(pattern))/ in \(scope): "
+        switch page.stop {
+        case .finished: header += "\(found) in \(files)."
+        case .pageFull: header += "more than \(found); \(files) searched so far."
+        case .fileCeiling, .timeLimit:
+            header += "\(found) in the \(files) searched before the scan stopped."
         }
-        guard !page.matches.isEmpty else {
-            return header + "\n\n  (no matches)"
+        header += " Files are searched in the order \(ToolCatalog.treeName) walks them."
+        guard !matches.isEmpty else {
+            return header + Self.nothing("(no matches)", total: page.matchesFound)
         }
-        let rows = page.matches.map { match in
+        if offset > 0 { header += " Matches \(offset + 1)–\(offset + matches.count) follow." }
+        let rows = matches.map { match in
             "  \(Self.oneLine(match.path)):\(match.lineNumber)\n      "
-                + Self.excerpt(match.line.trimmingCharacters(in: .whitespaces), limit: 300)
+                + Self.oneLine(match.line) + (match.isClipped ? "…" : "")
         }
-        var text = ([header, ""] + rows).joined(separator: "\n")
-        if page.truncated {
-            text += "\n\n  TRUNCATED — the match ceiling stopped the walk. Narrow the pattern or the folder."
-        }
-        return text
+        return ([header, ""] + rows).joined(separator: "\n")
     }
 
-    public func tags(_ tags: [String], path: String) -> String {
-        guard !tags.isEmpty else { return "\(path)\n\n  (no Finder tags)" }
-        return "\(path)\n\n" + tags.map { "  \($0)" }.joined(separator: "\n")
+    /// `tags` is the page to show; `total` counts every tag on the item.
+    public func tags(_ tags: [String], total: Int, path: String) -> String {
+        let header = "\(path): \(Self.plural(total, "Finder tag", "Finder tags")), in the order Finder keeps them."
+        guard !tags.isEmpty else { return header + Self.nothing("(no Finder tags)", total: total) }
+        return header + "\n\n" + tags.map { "  \(Self.oneLine($0))" }.joined(separator: "\n")
     }
 
     // MARK: Writes
@@ -233,7 +267,7 @@ public struct Format: Sendable {
     }
 
     public func setTags(_ tags: [String], path: String) -> String {
-        let value = tags.isEmpty ? "(none — all tags removed)" : tags.joined(separator: ", ")
+        let value = tags.isEmpty ? "(none — all tags removed)" : Self.tagsField(tags).text
         return "Tags set on \(path)\n\n" + Self.block([("tags", value)])
     }
 
@@ -256,29 +290,21 @@ public struct Format: Sendable {
 
     // MARK: Status
 
+    /// `rows` is the page of configured folders to show; `all` is every one of them, which
+    /// the headline and the warnings are about.
     public func status(
-        probes: [RootProbe], binaryPath: String,
-        configuration: Configuration, strandedWriteRoots: [String]
+        rows: [RootProbe], all: [RootProbe], binaryPath: String, configuration: Configuration
     ) -> String {
-        let readProbes = probes.filter { $0.access == .read }
-        let writeProbes = probes.filter { $0.access == .write }
+        let readCount = all.filter { $0.access == .read }.count
+        let writeCount = all.filter { $0.access == .write }.count
 
         let headline: String
-        if readProbes.isEmpty {
+        if readCount == 0 {
             headline = "Filesystem scope: NOTHING configured — this server can see no files."
-        } else if writeProbes.isEmpty {
-            headline = "Filesystem scope: READ-ONLY — \(readProbes.count) read root(s), no write root."
+        } else if writeCount == 0 {
+            headline = "Filesystem scope: READ-ONLY — \(readCount) read root(s), no write root."
         } else {
-            headline =
-                "Filesystem scope: \(readProbes.count) read root(s), \(writeProbes.count) write root(s)."
-        }
-
-        func render(_ probes: [RootProbe]) -> String {
-            probes.map { probe in
-                var line = "  \(probe.path) — \(probe.state.rawValue)"
-                if let canonical = probe.canonicalPath { line += "\n      resolves to \(canonical)" }
-                return line
-            }.joined(separator: "\n")
+            headline = "Filesystem scope: \(readCount) read root(s), \(writeCount) write root(s)."
         }
 
         var text = headline + "\n\n"
@@ -286,29 +312,37 @@ public struct Format: Sendable {
             ("binary", binaryPath),
             ("process", "pid \(ProcessInfo.processInfo.processIdentifier)"),
             ("time zone", calendar.timeZone.identifier),
-            ("max text read", Self.bytes(configuration.maximumReadBytes)),
             ("max hashed file", Self.bytes(configuration.maximumHashBytes)),
         ])
 
-        text += "\n\nReadable folders:\n"
-        text += readProbes.isEmpty ? "  (none configured — nothing is reachable)" : render(readProbes)
-        text += "\n\nWritable folders:\n"
-        text +=
-            writeProbes.isEmpty
-            ? "  (none configured — the server is read-only)" : render(writeProbes)
+        text += "\n\nConfigured folders: \(all.count), the readable ones first and then the"
+        text += " writable ones, each list in the order it was configured."
+        if readCount == 0 { text += "\n  (no readable folder configured — nothing is reachable)" }
+        if writeCount == 0 { text += "\n  (no writable folder configured — the server is read-only)" }
+        if rows.isEmpty {
+            if !all.isEmpty { text += "\n  (nothing at this offset)" }
+        } else {
+            text += "\n" + rows.map { probe in
+                var line = "  \(Self.pad(probe.access.rawValue, to: 5))  \(probe.path) — \(probe.state.rawValue)"
+                if probe.isStranded { line += " — STRANDED: outside every readable folder" }
+                if let canonical = probe.canonicalPath { line += "\n      resolves to \(canonical)" }
+                return line
+            }.joined(separator: "\n")
+        }
 
-        if !strandedWriteRoots.isEmpty {
+        let stranded = all.filter(\.isStranded).count
+        if stranded > 0 {
             text += """
 
 
-                WARNING — these write roots lie outside every read root, so they govern
-                nothing: a write has to satisfy the read check too.
-                  \(strandedWriteRoots.joined(separator: "\n  "))
-                Add them to the readable list as well, or remove them.
+                WARNING — \(Self.plural(stranded, "write root lies", "write roots lie")) outside \
+                every read root and so \(stranded == 1 ? "governs" : "govern") nothing: a write \
+                has to satisfy the read check too. Each is marked STRANDED in the list. Add \
+                them to the readable list as well, or remove them.
                 """
         }
 
-        if probes.contains(where: { $0.state == .notPermitted }) {
+        if all.contains(where: { $0.state == .notPermitted }) {
             text += """
 
 
